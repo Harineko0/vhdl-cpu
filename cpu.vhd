@@ -6,14 +6,14 @@ use ieee.std_logic_unsigned.all;
 -- 
 -- ## Instructions
 -- ### Basic
--- AD $addr: AC = AC + RAM[addr]      (0b00000000 (0x00))
+-- RT $addr: AC = AC + RAM[addr]      (0b00000000 (0x00)) (R-Type. 0b00abcdef, a: za, b: zb, c: na, d: nb, e: f, f: no)
+-- (ADD: 0b00000010, SUB: 0b010011, AND: 0b00000000, OR: 0b01010101, DECREMENT: 0b001110)
 -- LD $addr: AC = RAM[addr]           (0b01000000 (0x40))
 -- ST $addr: RAM[addr] = AC           (0b01010000 (0x50))
--- JZ $addr: if AC = 0 then PC = addr (0b10010000 (0x90))
 -- JU $addr: PC = addr                (0b10000000 (0x80))
+-- JZ $addr: if AC = 0 then PC = addr (0b10010000 (0x90))
 -- 
 -- ### ToDo
--- SB $addr: AC = AC - RAM[addr]      (0b00010000 (0x10))
 -- LDI $val: AC = val                 (0b01010000 (0x50))
 -- SYS $val: syscall val              (0b
 -- 
@@ -129,13 +129,13 @@ architecture rtl of cpu is
   -- control signals
   signal gate_pc, gate_ac, gate_mbr,
          inc_pc, clear_pc, load_pc, load_ir,
+         load_ac, load_mar, load_mbr, load_mem, r_w,
          -- za: zero ac, na: negative ac, zb: zero b, nb: negative b, f: ac and buss if 0 else ac + buss, no: negative output
-         alu_za, alu_na, alu_zb, alu_nb, alu_f, alu_no,
-         load_ac, load_mar, load_mbr, load_mem, r_w: std_logic;
-  signal nx_mar, nx_mbr, nx_ac, nx_pc, nx_ir,
-         alu_a, alu_b, alu_na_vec, alu_nb_vec, alu_no_vec: std_logic_vector (7 downto 0);
+         alu_za, alu_na, alu_zb, alu_nb, alu_f, alu_no: std_logic;
+  signal alu_out: std_logic_vector (K-1 downto 0);
+  signal nx_mar, nx_mbr, nx_ac, nx_pc, nx_ir: std_logic_vector (7 downto 0);
   signal ir_opr, ir_opnd: std_logic_vector (3 downto 0);
-  type opcode_type is (RT, LD, ST, JZ, SB, JU, UNK);
+  type opcode_type is (RT, LD, ST, JZ, JU, UNK);
   signal op: opcode_type;
   -- K bit, W word RAM
   component ram_WxK
@@ -155,6 +155,14 @@ architecture rtl of cpu is
          xrst: in std_logic;
          din: in  std_logic_vector(3 downto 0);
          dout: out std_logic_vector(6 downto 0));
+  end component;
+  -- ALU
+  component alu is
+    generic(K: integer);
+    port(
+      za, na, zb, nb, f, no: in std_logic;
+      ain, bin: in std_logic_vector (K-1 downto 0);
+      fout: out std_logic_vector (K-1 downto 0));
   end component;
 begin
   clk <= CLOCK_50;
@@ -216,17 +224,19 @@ begin
   load_mbr <= '1' when (state = e3 and op = ST) else '0'; -- e3 and ST
   load_mem <= '1' when (state = f1) or (state = e1) or (state = e3 and (op = RT or op = LD)) else '0';
   r_w      <= '1' when (state = e4 and op = ST) else '0';
-  alu_za   <= '1' when (state = e4 and op = LD) else '0';
-  alu_na   <= '1' when (state = e4 and op = LD) else '0';
-  alu_zb   <= '0';
-  alu_nb   <= '0';
-  alu_f    <= '1' when (state = e4 and op = RT) else '0';
-  alu_no   <= '0';
+  alu_za   <= '1' when (state = e4 and op = LD) else
+              ir(5) when (state = e4 and op = RT) else '0';
+  alu_na   <= '1' when (state = e4 and op = LD) else
+              ir(4) when (state = e4 and op = RT) else '0';
+  alu_zb   <= ir(3) when (state = e4 and op = RT) else '0';
+  alu_nb   <= ir(2) when (state = e4 and op = RT) else '0';
+  alu_f    <= ir(1) when (state = e4 and op = RT) else '0';
+  alu_no   <= ir(0) when (state = e4 and op = RT) else '0';
   -- state transition
   nx_state <= f0 when (state = idle and k_start = '1') or  -- run program
                       (state = e4 and ir(7) = '1') or -- if JUMP
                       (state = e5) or  -- execute cycle end
-                      (state = e3 and op = JZ and not ac = Z_VEC_K) or  -- if (JZ and ac != 0 (分岐))
+                      (state = e3 and op = JZ and ac /= Z_VEC_K) or  -- if (JZ and ac != 0 (分岐))
                       (state = e2 and op = JU) else -- if JU
               f1 when state = f0 else
               f2 when state = f1 else
@@ -266,21 +276,15 @@ begin
             dout    when load_mem = '1' else
             buss    when load_mbr = '1' else
             mbr;
-  -- alu logic
-  alu_a <= Z_VEC_K when alu_za = '1' else ac;
-  alu_b <= Z_VEC_K when alu_zb = '1' else buss;
-  alu_na_vec <= "11111111" when alu_na = '1' else Z_VEC_K;
-  alu_nb_vec <= "11111111" when alu_nb = '1' else Z_VEC_K;
-  alu_no_vec <= "11111111" when alu_no = '1' else Z_VEC_K;
+  -- ALU
+  alu1: alu generic map(K => K) port map(za => alu_za, na => alu_na, zb => alu_zb, nb => alu_nb, f => alu_f, no => alu_no, ain => ac, bin => buss, fout => alu_out);
   nx_ac  <= Z_VEC_K when state = idle else -- initialize
-            alu_no_vec xor ((alu_na_vec xor alu_a) + (alu_nb_vec xor alu_b))   when load_ac = '1' and alu_f = '1' else
-            alu_no_vec xor ((alu_na_vec xor alu_a) and (alu_nb_vec xor alu_b)) when load_ac = '1' and alu_f = '0' else
+            alu_out when load_ac = '1' else
             ac;
   -- instruction decode
   ir_opr <= ir(7 downto 4);
   ir_opnd <= ir(3 downto 0);
   op <= RT when ir(7 downto 6) = "00" else -- R Type
-        SB when ir_opr = "0001" else
         LD when ir_opr = "0100" else
         ST when ir_opr = "0101" else
         JZ when ir_opr = "1001" else
