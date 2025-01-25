@@ -6,12 +6,12 @@ use ieee.std_logic_unsigned.all;
 -- 
 -- ## Instructions
 -- ### Basic
--- RT $addr: AC = AC + RAM[addr]      (0b00000000 (0x00)) (R-Type. 0b00abcdef, a: za, b: zb, c: na, d: nb, e: f, f: no)
+-- RT $r1, $r2: AC[r1] = AC[r1] o AC[r2] (0b00XXXXXX) (R-Type. 0b00abcdef, a: za, b: zb, c: na, d: nb, e: f, f: no)
 -- (ADD: 0b00000010, SUB: 0b010011, AND: 0b00000000, OR: 0b01010101, DECREMENT: 0b001110)
--- LD $addr: AC = RAM[addr]           (0b01000000 (0x40))
--- ST $addr: RAM[addr] = AC           (0b01010000 (0x50))
--- JU $addr: PC = addr                (0b10000000 (0x80))
--- JZ $addr: if AC = 0 then PC = addr (0b10010000 (0x90))
+-- LD $rs $addr: AC[rs] = RAM[addr]    (0b01000000 (0x40))
+-- ST $rs $addr: RAM[addr] = AC[rs]    (0b01010000 (0x50))
+-- JU $addr: PC = addr                 (0b10000000 (0x80))
+-- JZ $rs $addr: if AC[rs] = 0 then PC = addr (0b10010000 (0x90))
 -- 
 -- ### ToDo
 -- LDI $val: AC = val                 (0b01010000 (0x50))
@@ -125,15 +125,19 @@ architecture rtl of cpu is
   -- display
   signal hx0, hx1, hx2, hx3, hx4, hx5: std_logic_vector(3 downto 0);
   -- registers and bus
-  signal mar, mbr, ac, pc, ir, buss: std_logic_vector (7 downto 0);
+  type ac_type is array(0 to 15) of std_logic_vector(K-1 downto 0);
+  signal ac: ac_type;
+  signal mar, mbr, pc, ir, buss: std_logic_vector (K-1 downto 0);
   -- control signals
   signal gate_pc, gate_ac, gate_mbr,
          inc_pc, clear_pc, load_pc, load_ir,
          load_ac, load_mar, load_mbr, load_mem, r_w,
          -- za: zero ac, na: negative ac, zb: zero b, nb: negative b, f: ac and buss if 0 else ac + buss, no: negative output
-         alu_za, alu_na, alu_zb, alu_nb, alu_f, alu_no: std_logic;
+         alu_za, alu_na, alu_zb, alu_nb, alu_f, alu_no, zero_ac: std_logic;
   signal alu_out: std_logic_vector (K-1 downto 0);
-  signal nx_mar, nx_mbr, nx_ac, nx_pc, nx_ir: std_logic_vector (7 downto 0);
+  signal ac1, ac2: std_logic_vector (K-1 downto 0); -- ac1 is connected to buss, ac2 is connected to alu input.
+  signal ac1_adr, ac2_adr: std_logic_vector (3 downto 0);
+  signal nx_mar, nx_mbr, nx_ac, nx_pc, nx_ir: std_logic_vector (K-1 downto 0);
   signal ir_opr, ir_opnd: std_logic_vector (3 downto 0);
   type opcode_type is (RT, LD, ST, JZ, JU, UNK);
   signal op: opcode_type;
@@ -181,8 +185,8 @@ begin
   ssd_3: seven_seg_decoder port map(clk => CLOCK_50, xrst => RESET_N, din => hx3, dout => HEX3);
   ssd_4: seven_seg_decoder port map(clk => CLOCK_50, xrst => RESET_N, din => hx4, dout => HEX4);
   ssd_5: seven_seg_decoder port map(clk => CLOCK_50, xrst => RESET_N, din => hx5, dout => HEX5);
-  hx0 <= dout(3 downto 0)      when state = idle else ac(3 downto 0);
-  hx1 <= dout(7 downto 4)      when state = idle else ac(7 downto 4);
+  hx0 <= dout(3 downto 0)      when state = idle else ac1(3 downto 0);
+  hx1 <= dout(7 downto 4)      when state = idle else ac1(7 downto 4);
   hx2 <= dout_prev(3 downto 0) when state = idle else pc(3 downto 0);
   hx3 <= dout_prev(7 downto 4) when state = idle else pc(7 downto 4);
   hx4 <= adr(3 downto 0)       when state = idle else ir(3 downto 0);
@@ -207,36 +211,40 @@ begin
 
   -- Control unit
   buss <= pc  when gate_pc = '1' else
-          ac  when gate_ac = '1' else
+          ac1 when gate_ac = '1' else
           mbr when gate_mbr = '1' else Z_VEC_K;
   gate_pc  <= '1' when (state = f0) or (state = e0) else '0';
-  gate_ac  <= '1' when (state = e3 and op = ST) else '0'; -- e3 and ST
+  gate_ac  <= '1' when (state = e3 and op = ST) or (state = e2 and op = RT) else '0';
   gate_mbr <= '1' when (state = f2) or 
-                       (state = e2 and ir_opr(3) = '0') or 
-                       (state = e4 and (op = RT or op = LD or op = JZ)) or 
-                       (state = e2 and op = JU) else '0'; -- f2 or (e2 and non-JUMP) or (e4 and (LD or RT))
-  inc_pc   <= '1' when (state = f3) or (state = e5) or (state = e2 and op = JZ) else '0';
+                       (state = e2 and (op = LD or op = ST or op = JU)) or 
+                       (state = e4 and (op = LD or op = JZ)) else '0'; -- f2 or (e2 and non-JUMP) or (e4 and (LD or RT))
+  inc_pc   <= '1' when (state = f3) or 
+                        
+                       (state = e2 and op = JZ) or
+                       (state = e3 and op = RT) or
+                       (state = e5) else '0';
   clear_pc <= '0';
   load_pc  <= '1' when (state = e4 and op = JZ) or (state = e2 and op = JU) else '0';
   load_ir  <= '1' when (state = f2) else '0';
-  load_ac  <= '1' when (state = e4 and (op = RT or op = LD)) else '0'; -- e4 and (LD or RT)
-  load_mar <= '1' when (state = f0) or (state = e0) or (state = e2 and ir(7) = '0') else '0'; -- 0xxxxxxx: other than JUMP
+  load_ac  <= '1' when (state = e4 and op = LD) or (state = e2 and op = RT) else '0';
+  load_mar <= '1' when (state = f0) or (state = e0) or (state = e2 and (op = LD or op = ST)) else '0'; -- 0xxxxxxx: other than JUMP
   load_mbr <= '1' when (state = e3 and op = ST) else '0'; -- e3 and ST
-  load_mem <= '1' when (state = f1) or (state = e1) or (state = e3 and (op = RT or op = LD)) else '0';
+  load_mem <= '1' when (state = f1) or (state = e1) or (state = e3 and op = LD) else '0';
   r_w      <= '1' when (state = e4 and op = ST) else '0';
-  alu_za   <= '1' when (state = e4 and op = LD) else
-              ir(5) when (state = e4 and op = RT) else '0';
-  alu_na   <= '1' when (state = e4 and op = LD) else
-              ir(4) when (state = e4 and op = RT) else '0';
-  alu_zb   <= ir(3) when (state = e4 and op = RT) else '0';
-  alu_nb   <= ir(2) when (state = e4 and op = RT) else '0';
-  alu_f    <= ir(1) when (state = e4 and op = RT) else '0';
-  alu_no   <= ir(0) when (state = e4 and op = RT) else '0';
+  alu_za   <= ir(5) when (state = e2 and op = RT) else '0';
+  alu_na   <= ir(4) when (state = e2 and op = RT) else '0';
+  alu_zb   <= '1'   when (state = e4 and op = LD) else
+              ir(3) when (state = e2 and op = RT) else '0';
+  alu_nb   <= '1'   when (state = e4 and op = LD) else
+              ir(2) when (state = e2 and op = RT) else '0';
+  alu_f    <= ir(1) when (state = e2 and op = RT) else '0';
+  alu_no   <= ir(0) when (state = e2 and op = RT) else '0';
   -- state transition
   nx_state <= f0 when (state = idle and k_start = '1') or  -- run program
                       (state = e4 and ir(7) = '1') or -- if JUMP
                       (state = e5) or  -- execute cycle end
-                      (state = e3 and op = JZ and ac /= Z_VEC_K) or  -- if (JZ and ac != 0 (分岐))
+                      (state = e3 and op = JZ and zero_ac /= '1') or  -- if (JZ and ac != 0 (分岐))
+                      (state = e3 and op = RT) or  -- if RT
                       (state = e2 and op = JU) else -- if JU
               f1 when state = f0 else
               f2 when state = f1 else
@@ -245,7 +253,7 @@ begin
               e1 when state = e0 else
               e2 when state = e1 else
               e3 when state = e2 else
-              e4 when state = e3 and (op /= JZ or ac = Z_VEC_K) else -- if JZ, e4 when AC = 0 (分岐)
+              e4 when state = e3 and (op /= JZ or zero_ac = '1') else -- if JZ, e4 when AC = 0 (分岐)
               e5 when (state = e4 and ir(7) = '0') else -- e4 and non-JUMP
               state;
   state_slv <= "0000" when state = idle else
@@ -277,10 +285,21 @@ begin
             buss    when load_mbr = '1' else
             mbr;
   -- ALU
-  alu1: alu generic map(K => K) port map(za => alu_za, na => alu_na, zb => alu_zb, nb => alu_nb, f => alu_f, no => alu_no, ain => ac, bin => buss, fout => alu_out);
+  alu1: alu generic map(K => K) port map(ain => buss, bin => ac2, fout => alu_out, za => alu_za, na => alu_na, zb => alu_zb, nb => alu_nb, f => alu_f, no => alu_no);
+  ac1    <= ac(conv_integer(ac1_adr));
+  ac2    <= ac(conv_integer(ac2_adr));
+  ac1_adr <= mbr(7 downto 4) when (state = e2 and op = RT )else
+             ir_opnd         when (state = e3 and (op = ST or op = JZ)) or
+                                  (state = e4 and op = LD) else
+             "0000";
+  ac2_adr <= mbr(3 downto 0) when (state = e2 and op = RT) else
+             ir_opnd         when (state = e3 and (op = ST or op = JZ)) or
+                                  (state = e4 and op = LD) else
+             "0000";
   nx_ac  <= Z_VEC_K when state = idle else -- initialize
             alu_out when load_ac = '1' else
-            ac;
+            ac1;
+  zero_ac <= '1' when ac1 = Z_VEC_K else '0';
   -- instruction decode
   ir_opr <= ir(7 downto 4);
   ir_opnd <= ir(3 downto 0);
@@ -297,7 +316,7 @@ begin
       state <= idle;
       pc <= Z_VEC_K;
       ir <= Z_VEC_K;
-      ac <= Z_VEC_K;
+      ac <= (others => Z_VEC_K);
       mar <= Z_VEC_K;
       mbr <= Z_VEC_K;
       k_incr_last <= '0';
@@ -309,7 +328,7 @@ begin
         state <= nx_state;
         pc <= nx_pc;
         ir <= nx_ir;
-        ac <= nx_ac;
+        ac(conv_integer(ac1_adr)) <= nx_ac;
         mar <= nx_mar;
         mbr <= nx_mbr;
       end if;
