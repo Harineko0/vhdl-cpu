@@ -7,7 +7,7 @@ use modelsim_lib.util.all;
 
 entity tb_cpu is
     generic(K: integer := 8;
-            W: integer := 8);
+            W: integer := 10);
 end tb_cpu;
 
 
@@ -99,7 +99,8 @@ architecture testbench of tb_cpu is
   signal cpu_ram, res_ram: mem;
   type state_type is (idle, f0, f1, f2, f3, e0, e1, e2, e3, e4, e5);
   signal cpu_state: state_type;
-  signal cpu_ir, cpu_pc, old_pc: std_logic_vector(K-1 downto 0);
+  signal cpu_ir: std_logic_vector(K-1 downto 0);
+  signal cpu_pc, old_pc: std_logic_vector(W-1 downto 0);
   component cpu
     generic(K: integer;
             W: integer);
@@ -149,21 +150,18 @@ begin
     init_signal_spy("tb_cpu/cpu1/state","/cpu_state",1);
 
     wait until cpu_state = f3;
-    
     old_pc <= cpu_pc;
-
     wait until cpu_state = f0; -- next instruction
 
     -- detect infinite loop
     if ((old_pc = cpu_pc and cpu_ir = "10000000")) then
       for i in input_table'range loop -- set ram_res
-        res_ram(conv_integer(std_logic_vector(to_unsigned(i, W)))) <= std_logic_vector(to_unsigned(input_table(i).result, K));
+        assert (cpu_ram(i) /= std_logic_vector(to_unsigned(input_table(i).result, K))) report "CPU RAM does not match expected result" severity failure;
       end loop;
       
-      assert (cpu_ram /= res_ram) report "CPU RAM does not match expected result" severity failure;
-      wait for period * 10;
       assert (false) report "Simulation successfully completed!" severity failure;
     end if;
+
   end process;
 
   cpu1: cpu generic map(K => K, W => W) port map(CLOCK_50 => clk,

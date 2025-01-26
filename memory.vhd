@@ -10,8 +10,9 @@ entity memory is
        din: in std_logic_vector (K-1 downto 0);
        dout: out std_logic_vector (K-1 downto 0);
        dout_prev: out std_logic_vector (K-1 downto 0);
-       iin: in std_logic_vector (K*I - 1 downto 0);
-       iout out std_logic_vector (K*I - 1 downto 0);
+       -- memory mapped I/Ox
+       io_in: in std_logic_vector (K*I - 1 downto 0);
+       io_out out std_logic_vector (K*I - 1 downto 0);
        wadr: in std_logic_vector (W-1 downto 0);
        radr: in std_logic_vector (W-1 downto 0);
        we: in std_logic);
@@ -37,8 +38,8 @@ architecture rtl of memory is
 begin
     ram1: ram_WxK generic map(K => K, W => W) port map(clk => clk, din => din, wadr => wadr, radr => radr, we => we, dout => mout, dout_prev => dout_prev);
 
-    dout <= iin when radr > RAM_ADR_MAX else mout;
-    iout <= io_ram;
+    dout <= io_in when radr > RAM_ADR_MAX else mout;
+    io_out <= io_ram;
 
     process(clk)
     begin
